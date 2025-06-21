@@ -22,13 +22,10 @@
     <ClInclude Include="zstdImgAlloc.h" />
     <ClInclude Include="zstdImgCompiler.h" />
     <ClInclude Include="zstdImgFormat.h" />
-    <ClInclude Include="zstdImgInit.h" />
     <ClInclude Include="zstdImgRead.h" />
     <ClInclude Include="zstdImgWrite.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="zstdImgAlloc.cpp" />
-    <ClCompile Include="zstdImgInit.cpp" />
     <ClCompile Include="zstdImgRead.cpp" />
     <ClCompile Include="zstdImgWrite.cpp" />
   </ItemGroup>

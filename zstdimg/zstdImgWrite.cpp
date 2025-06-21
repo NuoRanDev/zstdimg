@@ -1,12 +1,55 @@
-#include "zstd.h"
+﻿#include "zstd.h"
 
 #include "zstdImgWrite.h"
 #include "zstdImgAlloc.h"
-#include "zstdImgInit.h"
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
+namespace zimg 
+{
+	bool DiskMemoryPool::InputDeskMemory1GB(byte_t* input_mem_data)
+	{
+		std::fstream cache_file;
+		std::string item_name = cahe_name + std::to_string(CACHE_FILES.size());
+		std::filesystem::path cache_path = std::filesystem::current_path() / item_name;
+
+		if (input_mem_data == nullptr)
+		{
+			return false;
+		}
+		cache_file.open(cache_path, std::ios::binary | std::ios::out | std::ios::in);
+
+		return true;
+	}
+
+	bool DiskMemoryPool::OutputDeskMemory1GB(byte_t* output_mem_data)
+	{
+		uint64_t index = CACHE_FILES.size();
+		std::string item_name = cahe_name + std::to_string(index);
+		std::filesystem::path cache_path = std::filesystem::current_path() / item_name;
+		auto file = CACHE_FILES.end();
+
+		file->read(reinterpret_cast<char*>(output_mem_data), MAX_CACHE_FILE_SIZE);
+		file->close();
+
+		if(std::filesystem::remove(cache_path))
+		{
+			return false;
+		}
+		CACHE_FILES.pop_back();
+		return true;
+	}
+
+	DiskMemoryPool::~DiskMemoryPool()
+	{
+		for (auto& file : CACHE_FILES)
+		{
+			if (file.is_open())
+			{
+				file.close();
+			}
+		}
+		CACHE_FILES.clear();
+	}
+}
 
 int zWriteImgToMemory(const Zimg img, ZimgMemoryFile* mem_data)
 {

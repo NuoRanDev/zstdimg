@@ -1,110 +1,102 @@
-#include "zstd.h"
+﻿#include "zstd.h"
 
 #include "zstdImgRead.h"
 #include "zstdImgAlloc.h"
-#include "zstdImgInit.h"
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <string>
 
 namespace zimg
 {
-	ZimgReturn ChildImageReader::GetChildImageLine(byte_t* data_in, int32_t line_index, int32_t number)
+	int64_t ChildImageReader::DecompressLineData(const byte_t* src, byte_t* dst)
 	{
-		return ZimgReturn::Z_OK;
-	}
-
-	ZimgReturn ChildImageReader::GetChildImageAllData(byte_t* data)
-	{
-		ZimgFileHeader f_header = { 0 };
-
-		const byte_t* cur_data_ptr = data;
-
-		byte_t* cur_img_data_ptr = NULL;
-
-		uint64_t compressed_data_size = 0;
-		uint64_t line_size = 0;				// compress unit
-
-		cur_data_ptr += sizeof(ZimgFileHeader);
-
-		memcpy(&f_header, cur_data_ptr, sizeof(ZimgFileHeader));
-		cur_data_ptr += sizeof(ZimgFileHeader);
-
-		pimg->channel = f_header.channel;
-		pimg->channel_byte_size = f_header.channel_byte_size;
-		pimg->x = f_header.x;
-		pimg->y = f_header.y;
-		pimg->data = (byte_t*)zmalloc(f_header.x * f_header.y * f_header.channel_byte_size);
-
-		line_size = pimg->channel * pimg->channel_byte_size * pimg->x;
-
-		cur_img_data_ptr = pimg->data;
-
-		for (uint64_t i = 0; i < pimg->y; i++)
+		// 获取压缩行大小
+		const ZimgCompressLine* compressed_line_data = reinterpret_cast<const ZimgCompressLine*>(src);
+		int64_t out_size = static_cast<int64_t>(compressed_line_data->compress_data_size);
+		// 解压
+		auto decompress_data_size = ZSTD_decompress(dst, GetImgLineAllocSize(), compressed_line_data->compress_data, compressed_line_data->compress_data_size);
+		uint32_t code = ZSTD_isError(decompress_data_size);
+		if (code)
 		{
-			memcpy(&compressed_data_size, cur_data_ptr, sizeof(uint64_t));
-			cur_data_ptr += sizeof(uint64_t);
-
-			uint64_t decompress_frame_size = ZSTD_getFrameContentSize(cur_data_ptr, compressed_data_size);
-			uint64_t decompress_size = ZSTD_decompress(cur_img_data_ptr, decompress_frame_size, cur_data_ptr, compressed_data_size);
-
-			cur_data_ptr += compressed_data_size;
-			cur_img_data_ptr += line_size;
-
-			if (decompress_size != line_size)
-			{
-				printf("<LIB: ZSTD> Decmpressed file is broken | source size: %llu ,decommpress: %llu", line_size, decompress_size);
-				zfree(pimg->data);
-				return ZimgReturn::Z_FILE_BROKEN;
-			}
-			uint32_t code = ZSTD_isError(decompress_size);
-			if (code)
-			{
-				printf("<LIB: ZSTD> CompressZSTD error: %s", ZSTD_getErrorName(decompress_size));
-				zfree(pimg->data);
-				return ZimgReturn::Z_DECOMPRESS_ERROR;
-			}
+			printf("<LIB: ZSTD> ZSTD_decompress error: %s", ZSTD_getErrorName(decompress_data_size));
+			return static_cast<int64_t>(ZimgReturn::Z_DECOMPRESS_ERROR);
 		}
-		return ZimgReturn::Z_OK;
+		return static_cast<int64_t>(ZimgReturn::Z_OK) + out_size;
 	}
+
+	ChildImageReader::LineNumber ChildImageReader::GetChildImageLine(byte_t* data_out, uint64_t line_index, ChildImageReader::LineNumber number)
+	{
+		uint64_t read_line_number = number;
+		const byte_t* cur_compressed_data = main_context->file_data + child_info.start;
+		int64_t jump_mem = 0;
+		// 计算偏移
+		if ((line_index + number) > GetChildImgYNumber())
+		{
+			puts("<FUNCTION ChildImageReader::GetChildImageLine> Warning Out of line");
+			read_line_number = GetChildImgYNumber() - line_index;
+		}
+
+		for (uint64_t i = 0; i < read_line_number; i++)
+		{
+			jump_mem = DecompressLineData(cur_compressed_data, data_out);
+			if (jump_mem < 0)
+			{
+				return jump_mem; // 错误
+			}
+			cur_compressed_data += jump_mem;
+		}
+		return read_line_number;
+	}
+
+	ChildImageReader::LineNumber ChildImageReader::GetChildImageAllData(byte_t* out_data)
+	{
+		return GetChildImageLine(out_data, 0, GetChildImgYNumber());
+	}	
 
 	ZimgReturn MainImgReadContext::InitMainContext()
 	{
+		// 图片头部信息
 		ZimgFileHeader img_header;
-		memcpy(&img_header, file_data, sizeof(ZimgFileHeader));
-		if (img_header.file_header_text != FILE_HEADER_TEXT)
+		// 内存偏移
+		const byte_t* cur_data_ptr = file_data;
+
+		// 验证头
+		memcpy(&img_header, cur_data_ptr, sizeof(ZimgFileHeader));
+		if (img_header.file_header_text != HeaderText::FILE_HEADER_TEXT)
 		{
 			puts("<FUNCTION: MainImgReadContext::InitMainContext> File header is broken or not zimg file");
 			return ZimgReturn::Z_FILE_BROKEN;
 		}
 		img_info = img_header.info;
+		cur_data_ptr += sizeof(ZimgFileHeader);
+
+		for (uint64_t i = 0; i < img_info.child_img_number; i++)
+		{
+			ZimgChildHeader child_img_header;
+			// 读取子图片信息
+			memcpy(&child_img_header, cur_data_ptr, sizeof(ZimgChildHeader));
+			// 读取标记字符串
+			const char* text = reinterpret_cast<const char*>(cur_data_ptr) + sizeof(ChildImgInfo);
+			child_img_map->insert(std::pair<std::string, ChildImgInfo>(std::string(text), child_img_header.info));
+			cur_data_ptr += child_img_header.header_ooffset;
+		}
+		
 		return ZimgReturn::Z_OK;
 	}
 
-	ImgInfo MainImgReadContext::GetChildInfo()
+	ZimgReturn MainImgReadContext::GetChildrenImage(std::string& index, ChildImageReader& child_img_out)
 	{
-		return img_info;
-	}
-
-	ZimgReturn MainImgReadContext::GetChildrenImage(uint64_t child_x_index, uint64_t child_y_index, ChildImageReader& child_img)
-	{
-		uint64_t index = child_x_index + img_info.x_child_number * child_y_index;
-		const byte_t* cur_data_ptr = file_data;
-
-		if (index > img_info.x_child_number * img_info.y_child_number || index < 0)
+		auto found = child_img_map->find(index);
+		if (found == child_img_map->end())
 		{
-			puts("<FUNCTION: MainImgReadContext::GetChildrenImage> Out of child number");
-			return ZimgReturn::Z_OUT_OF_MEMORY;
+			return ZimgReturn::Z_NOT_FIND;
 		}
-
-		file_data += sizeof(ZimgFileHeader);
-
-		for (uint64_t i = 0; i < ind; i++)
+		else
 		{
-
+			child_img_out = ChildImageReader(this, found->second);
 		}
-
 		return ZimgReturn::Z_OK;
 	}
 }
